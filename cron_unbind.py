@@ -26,10 +26,10 @@ def init_logger():
 
 # ---------- configure init ----------
 def init_config():
-    rancher_url = os.getenv("RANCHER_URL", "https://localhost").rstrip("/")
-    access_key = os.getenv("ACCESS_KEY", "token-wtzzd")
+    rancher_url = os.getenv("RANCHER_URL", "").rstrip("/")
+    access_key = os.getenv("ACCESS_KEY", "")
     secret_key = os.getenv(
-        "SECRET_KEY", "5h8pdqvrc8p7pnsgclww8z7xs4lw75cf96hghm2dn7pqfftn9tkfj6"
+        "SECRET_KEY", ""
     )
     if not access_key or not secret_key:
         print("please export envs ACCESS_KEY and SECRET_KEY")

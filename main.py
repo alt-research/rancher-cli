@@ -10,15 +10,12 @@ features:
  6. view one roleTamples detail
  7. list all role bindings for user
  8. bind role to user
- 9. tempbind role to user
- 10. unbind role from user
+ 9. unbind role from user
 """
 import os
 import sys
 import json
-import logging
 import requests
-import warnings
 import argparse
 from datetime import datetime, timedelta
 
@@ -69,12 +66,39 @@ def get_cluster_members(cluster_id, url, headers, logger):
     resp.raise_for_status()
     return resp.json()["data"]
 
+def list_cluster_members(cluster_name, url, headers, logger):
+    cluster_id = get_cluster_id(cluster_name, url, headers, logger)
+    if not cluster_id:
+        print("(none)")
+        return
+
+    members = get_cluster_members(cluster_id, url, headers, logger)
+    if not members:
+        print("(none)")
+        return
+
+    for m in members:
+        principal_id = m.get("userPrincipalId") or m.get("groupPrincipalId")
+        name = get_username_by_user_id(principal_id, url, headers, logger)
+        role_id = m.get("roleTemplateId")
+        role_name = get_role_display_name(role_id, url, headers, logger) or role_id
+        print(f"- {name:<25} => {role_name} [{role_id}]")
+
 
 def get_all_users(url, headers, logger):
     logger.info("get all users")
     resp = requests.get(f"{url}/v3/users", headers=headers, verify=False)
     resp.raise_for_status()
     return [(u["id"], u.get("name", "")) for u in resp.json().get("data", [])]
+
+def list_users(url, headers, logger):
+    users = get_all_users(url, headers, logger)
+    if not users:
+        print("(none)")
+        return
+
+    for uid, name in users:
+        print(f"{uid}\t{name}")
 
 
 def get_clusters(url, headers, logger):
@@ -83,6 +107,20 @@ def get_clusters(url, headers, logger):
     resp.raise_for_status()
     for c in resp.json().get("data", []):
         return [(c["id"], c.get("name", ""))]
+
+def list_clusters(url, headers, logger):
+    clusters = get_clusters(url, headers, logger)
+    if not clusters:
+        print("(none)")
+        return
+
+    for cid, name in clusters:
+        print(f"{cid}\t{name}")
+
+
+def get_username_by_user_id(user_id, url, headers, logger):
+    logger.info(f"get username by user_id: {user_id}")
+    resp = requests.get(f"{url}/v3/users/{user_id}", headers=headers, verify=False)
 
 
 def get_projects(url, headers, logger, cluster_id):
@@ -99,49 +137,76 @@ def get_projects(url, headers, logger, cluster_id):
     resp.raise_for_status()
     return [(p["id"], p.get("name", "")) for p in resp.json().get("data", [])]
 
+def list_projects(url, headers, logger, cluster_id):
+    projects = get_projects(url, headers, logger, cluster_id)
+    if not projects:
+        print("(none)")
+    else:
+        for pid, name in projects:
+            print(f"{pid}\t{name}")
+
 
 # ------------------- RoleTemplate query -------------------
 def fetch_all_templates(rancher_url, headers, logger):
+    result = {}
+
     # Global
     globals_ = (
         requests.get(f"{rancher_url}/v3/globalroles", headers=headers, verify=False)
         .json()
         .get("data", [])
     )
-    print("\n" + "=" * 50)
-    print("🌐  Global Roles")
-    print("=" * 50)
-    for r in globals_:
-        print(f"  - {r['id']:<12}  {r.get('displayName') or r.get('name')}")
+    result["global"] = [
+        (r["id"], r.get("displayName") or r.get("name")) for r in globals_
+    ]
 
     # Cluster
-    url = f"{rancher_url}/v3/roletemplates?context=cluster&limit=1000"
-    resp = requests.get(url, headers=headers, verify=False)
-    resp.raise_for_status()
-    clusters = resp.json().get("data", [])
-    print("\n" + "=" * 50)
-    print("☁️  Cluster RoleTemplates")
-    print("=" * 50)
+    cluster_resp = requests.get(
+        f"{rancher_url}/v3/roletemplates?context=cluster&limit=1000",
+        headers=headers,
+        verify=False,
+    )
+    cluster_resp.raise_for_status()
+    clusters = cluster_resp.json().get("data", [])
+    result["cluster"] = [
+        (r["id"], r.get("displayName") or r.get("name")) for r in clusters
+    ]
     if not clusters:
-        logger.warning(
-            "No cluster templates returned; check context param or permissions."
-        )
-    for r in clusters:
-        print(f"  - {r['id']:<12}  {r.get('displayName') or r.get('name')}")
+        logger.warning("No cluster templates returned; check context param or permissions.")
 
     # Project
-    url = f"{rancher_url}/v3/roletemplates?context=project&limit=1000"
-    projects = requests.get(url, headers=headers, verify=False).json().get("data", [])
-    print("\n" + "=" * 50)
-    print("📦  Project RoleTemplates")
-    print("=" * 50)
-    for r in projects:
-        print(f"  - {r['id']:<12}  {r.get('displayName') or r.get('name')}")
+    projects = (
+        requests.get(
+            f"{rancher_url}/v3/roletemplates?context=project&limit=1000",
+            headers=headers,
+            verify=False,
+        )
+        .json()
+        .get("data", [])
+    )
+    result["project"] = [
+        (r["id"], r.get("displayName") or r.get("name")) for r in projects
+    ]
+
+    return result
+
+def print_templates(categorized_templates):
+    emoji = {"global": "🌐", "cluster": "☁️", "project": "📦"}
+    for level in ["global", "cluster", "project"]:
+        templates = categorized_templates.get(level, [])
+        print("\n" + "=" * 50)
+        print(f"{emoji.get(level, '')}  {level.capitalize()} RoleTemplates")
+        print("=" * 50)
+        if not templates:
+            print("  (none)")
+        else:
+            for tpl_id, name in templates:
+                print(f"  - {tpl_id:<12}  {name}")
+
 
 
 # ------------------- RoleTemplate display name query  -------------------
 def get_role_display_name(role_id, url, headers, logger, builtin_roles_cache=None):
-    # 优先从内置角色缓存中查找
     if builtin_roles_cache and role_id in builtin_roles_cache:
         return builtin_roles_cache[role_id]
     if role_id.startswith("rt-"):
@@ -173,7 +238,6 @@ def list_bindings(user_id, url, headers, logger):
     logger.info(f"get the rolebindings of the user: {user_id}")
     bindings = []
 
-    # 1. 预加载内置角色模板缓存
     builtin_roles_cache = {}
     try:
         resp = requests.get(
@@ -243,28 +307,23 @@ def role_exists(role_id, level, url, headers, logger):
 
 # ------------------- check target exists   -------------------
 def validate_target_exists(level, target, url, headers, logger):
-    # 定义API端点映射
-    endpoint_map = {"cluster": ("clusters"), "project": ("projects")}
-
-    # global级别无需校验target
     if level == "global":
         return True
-    # 检查是否支持的目标类型
-    if level not in endpoint_map:
-        logger.error(f"不支持的资源级别: {level}")
-        return False
-
+    endpoint_map = {"cluster": "clusters", "project": "projects"}
     endpoint_key = endpoint_map[level]
+    if not endpoint_key:
+        logger.error(f"not support the level: {level}")
+        return False
+    
+    target_url = f"{url}/v3/{endpoint_key}/{target}"
     try:
-        resp = requests.get(
-            f"{url}/v3/{endpoint_key}/{target}", headers=headers, verify=False
-        )
+        resp = requests.get(target_url, headers=headers, verify=False)
         if resp.status_code == 200:
             return True
         elif resp.status_code == 404:
             logger.error(f"the target [{target}] not exist in the {level}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"request error: {str(e)} | URL: {url}")
+        logger.error(f"request error: {str(e)} | URL: {target_url}")
     return False
 
 
@@ -416,19 +475,20 @@ def main():
     # if choices in ['cluster', 'project'], need target
     p_bind.add_argument("--target", default="")
 
-    p_temp = sub.add_parser(
-        "tempbind", help="bind the role to the given user with a temporary duration"
-    )
-    p_temp.add_argument("username")
-    p_temp.add_argument("roleId")
-    p_temp.add_argument("level", choices=["global", "cluster", "project"])
-    p_temp.add_argument("--target", default="")
-    p_temp.add_argument("--duration", type=int, default=10)
+    # p_temp = sub.add_parser(
+    #     "tempbind", help="bind the role to the given user with a temporary duration"
+    # )
+    # p_temp.add_argument("username")
+    # p_temp.add_argument("roleId")
+    # p_temp.add_argument("level", choices=["global", "cluster", "project"])
+    # p_temp.add_argument("--target", default="")
+    # p_temp.add_argument("--duration", type=int, default=10)
 
     p_unbind = sub.add_parser("unbind", help="unbind the role from the given user")
     p_unbind.add_argument("username")
     p_unbind.add_argument("roleId")
     p_unbind.add_argument("level", choices=["global", "cluster", "project"])
+      # if choices in ['cluster', 'project'], need target
     p_unbind.add_argument("--target", default="")
 
     p_view = sub.add_parser("view", help="query the RoleTemplate context from roleId")
@@ -438,7 +498,8 @@ def main():
 
     try:
         # # check the args validity before request
-        if args.cmd in ["bind", "tempbind", "unbind"]:
+        #if args.cmd in ["bind", "tempbind", "unbind"]:
+        if args.cmd in ["bind", "unbind"]:
             if args.level in ["cluster", "project"] and not args.target:
                 parser.error(
                     f"--target the param on level={args.level} is must。pleaase add  --target=<obj ID>"
@@ -471,86 +532,37 @@ def main():
             unbind_role(uid, args.roleId, args.level, args.target, url, headers, logger)
 
         # for tempbind，only set the annotation for the mapping
-        elif args.cmd == "tempbind":
-            uid = get_user_id(args.username, url, headers, logger)
-            binding_id=bind_role(
-                uid,
-                args.roleId,
-                args.level,
-                args.target,
-                url,
-                headers,
-                logger,
-                duration_minutes=args.duration,
-            )
-            if binding_id:
-                print(f"Will automatically unbind after {args.duration} minutes")
+        # elif args.cmd == "tempbind":
+        #     uid = get_user_id(args.username, url, headers, logger)
+        #     binding_id=bind_role(
+        #         uid,
+        #         args.roleId,
+        #         args.level,
+        #         args.target,
+        #         url,
+        #         headers,
+        #         logger,
+        #         duration_minutes=args.duration,
+        #     )
+        #     if binding_id:
+        #         print(f"Will automatically unbind after {args.duration} minutes")
             # time.sleep(args.duration * 60)
             # unbind_role(uid, args.roleId, args.level, args.target, url, headers, logger)
 
         elif args.cmd == "view":
             view_role_template(args.roleId, url, headers, logger)
-
         elif args.cmd == "list-roleTemplates":
-            categorized_templates = fetch_all_templates(url, headers, logger)
-            if not categorized_templates:
-                print("(none)")
-            else:
-                for level, templates in categorized_templates.items():
-                    logger.info(f"Level: {level}")
-                    if templates:
-                        for tpl in templates:
-                            logger.info(f"  Role ID: {tpl[0]}, Name: {tpl[1]}")
-                    else:
-                        logger.info(f"  No templates found for level: {level}")
-
+            templates = fetch_all_templates(url, headers, logger)
+            print_templates(templates)
         elif args.cmd == "list-clusters":
-            clusters = get_clusters(url, headers, logger)
-            if not clusters:
-                print("(none)")
-            else:
-                for cid, name in clusters:
-                    print(f"{cid}\t{name}")
-
+            list_clusters(url, headers, logger)
         elif args.cmd == "list-projects":
-            projects = get_projects(url, headers, logger, args.cluster)
-            if not projects:
-                print("(none)")
-            else:
-                for pid, name in projects:
-                    print(f"{pid}\t{name}")
-
+            list_projects(url, headers, logger, args.cluster)
         elif args.cmd == "list-users":
-            users = get_all_users(url, headers, logger)
-            if not users:
-                print("(none)")
-            else:
-                for uid, name in users:
-                    print(f"{uid}\t{name}")
-
+            list_users(url, headers, logger)
         elif args.cmd == "list-cluster-members":
-            cluster_id = get_cluster_id(args.cluster, url, headers, logger)
-            if not cluster_id:
-                print("(none)")
-            else:
-                cluster_members = get_cluster_members(cluster_id, url, headers, logger)
-                if not cluster_members:
-                    print("(none)")
-                else:
-                    for m in cluster_members:
-                        principal_id = m.get("userPrincipalId") or m.get(
-                            "groupPrincipalId"
-                        )
-                        name = get_username_by_user_id(
-                            principal_id, url, headers, logger
-                        )
-                        roleTeamplateId = m.get("roleTemplateId")
-                        # since the built-in roleTemplateId is not a real roleTemplateId, so we need to get the display name from the roleTemplateId
-                        roleName = (
-                            get_role_display_name(roleTeamplateId, url, headers, logger)
-                            or roleTeamplateId
-                        )
-                        print(f"- {name:<25} => {roleName} [{roleTeamplateId}]")
+            list_cluster_members(args.cluster, url, headers, logger)
+    
 
     except Exception as e:
         logger.exception(f"Error: {e}")
